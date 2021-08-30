@@ -50,8 +50,8 @@ test('should load dynamic import with vars', async () => {
 test('should load dynamic import with css', async () => {
   await page.click('.css')
   await untilUpdated(
-    () => page.$eval('.css', (node) => window.getComputedStyle(node).boxSizing),
-    'border-box',
+    () => page.$eval('.css', (node) => window.getComputedStyle(node).display),
+    'inline-flex',
     true
   )
 })

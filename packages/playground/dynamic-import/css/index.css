@@ -1,2 +1,7 @@
-.css { box-sizing: border-box; }
-.view { color: red; }
+.css {
+  box-sizing: border-box;
+  display: inline-flex;
+}
+.view {
+  color: red;
+}
