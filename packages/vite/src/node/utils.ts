@@ -4,7 +4,13 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { pathToFileURL, URL } from 'url'
-import { FS_PREFIX, DEFAULT_EXTENSIONS, VALID_ID_PREFIX } from './constants'
+import {
+  FS_PREFIX,
+  DEFAULT_EXTENSIONS,
+  VALID_ID_PREFIX,
+  CLIENT_PUBLIC_PATH,
+  ENV_PUBLIC_PATH
+} from './constants'
 import resolve from 'resolve'
 import builtins from 'builtin-modules'
 import { FSWatcher } from 'chokidar'
@@ -24,7 +30,11 @@ export function unwrapId(id: string): string {
   return id.startsWith(VALID_ID_PREFIX) ? id.slice(VALID_ID_PREFIX.length) : id
 }
 
-export const flattenId = (id: string): string => id.replace(/[\/\.]/g, '_')
+export const flattenId = (id: string): string =>
+  id.replace(/(\s*>\s*)/g, '__').replace(/[\/\.]/g, '_')
+
+export const normalizeId = (id: string): string =>
+  id.replace(/(\s*>\s*)/g, ' > ')
 
 export function isBuiltin(id: string): boolean {
   return builtins.includes(id)
@@ -38,15 +48,38 @@ try {
   isRunningWithYarnPnp = Boolean(require('pnpapi'))
 } catch {}
 
-const ssrExtensions = ['.js', '.json', '.node']
+const ssrExtensions = ['.js', '.cjs', '.json', '.node']
 
-export function resolveFrom(id: string, basedir: string, ssr = false): string {
+export function resolveFrom(
+  id: string,
+  basedir: string,
+  preserveSymlinks = false,
+  ssr = false
+): string {
   return resolve.sync(id, {
     basedir,
     extensions: ssr ? ssrExtensions : DEFAULT_EXTENSIONS,
     // necessary to work with pnpm
-    preserveSymlinks: isRunningWithYarnPnp || false
+    preserveSymlinks: preserveSymlinks || isRunningWithYarnPnp || false
   })
+}
+
+/**
+ * like `resolveFrom` but supports resolving `>` path in `id`,
+ * for example: `foo > bar > baz`
+ */
+export function nestedResolveFrom(
+  id: string,
+  basedir: string,
+  preserveSymlinks = false
+): string {
+  const pkgs = id.split('>').map((pkg) => pkg.trim())
+  try {
+    for (const pkg of pkgs) {
+      basedir = resolveFrom(pkg, basedir, preserveSymlinks)
+    }
+  } catch {}
+  return basedir
 }
 
 // set in bin/vite.js
@@ -58,13 +91,16 @@ interface DebuggerOptions {
   onlyWhenFocused?: boolean | string
 }
 
+export type ViteDebugScope = `vite:${string}`
+
 export function createDebugger(
-  ns: string,
+  namespace: ViteDebugScope,
   options: DebuggerOptions = {}
 ): debug.Debugger['log'] {
-  const log = debug(ns)
+  const log = debug(namespace)
   const { onlyWhenFocused } = options
-  const focus = typeof onlyWhenFocused === 'string' ? onlyWhenFocused : ns
+  const focus =
+    typeof onlyWhenFocused === 'string' ? onlyWhenFocused : namespace
   return (msg: string, ...args: any[]) => {
     if (filter && !msg.includes(filter)) {
       return
@@ -94,8 +130,8 @@ export function ensureVolumeInPath(file: string): string {
   return isWindows ? path.resolve(file) : file
 }
 
-export const queryRE = /\?.*$/
-export const hashRE = /#.*$/
+export const queryRE = /\?.*$/s
+export const hashRE = /#.*$/s
 
 export const cleanUrl = (url: string): string =>
   url.replace(hashRE, '').replace(queryRE, '')
@@ -119,8 +155,17 @@ export const isJSRequest = (url: string): boolean => {
 }
 
 const importQueryRE = /(\?|&)import=?(?:&|$)/
+const internalPrefixes = [
+  FS_PREFIX,
+  VALID_ID_PREFIX,
+  CLIENT_PUBLIC_PATH,
+  ENV_PUBLIC_PATH
+]
+const InternalPrefixRE = new RegExp(`^(?:${internalPrefixes.join('|')})`)
 const trailingSeparatorRE = /[\?&]$/
 export const isImportRequest = (url: string): boolean => importQueryRE.test(url)
+export const isInternalRequest = (url: string): boolean =>
+  InternalPrefixRE.test(url)
 
 export function removeImportQuery(url: string): string {
   return url.replace(importQueryRE, '$1').replace(trailingSeparatorRE, '')
@@ -206,7 +251,7 @@ export function isObject(value: unknown): value is Record<string, any> {
 }
 
 export function isDefined<T>(value: T | undefined | null): value is T {
-  return value !== undefined && value !== null
+  return value != null
 }
 
 export function lookupFile(
@@ -255,7 +300,9 @@ export function numberToPos(
 ): { line: number; column: number } {
   if (typeof offset !== 'number') return offset
   if (offset > source.length) {
-    throw new Error('offset is longer than source length!')
+    throw new Error(
+      `offset is longer than source length! offset ${offset} > length ${source.length}`
+    )
   }
   const lines = source.split(splitRE)
   let counted = 0
@@ -351,6 +398,9 @@ export function copyDir(srcDir: string, destDir: string): void {
   fs.mkdirSync(destDir, { recursive: true })
   for (const file of fs.readdirSync(srcDir)) {
     const srcFile = path.resolve(srcDir, file)
+    if (srcFile === destDir) {
+      continue
+    }
     const destFile = path.resolve(destDir, file)
     const stat = fs.statSync(srcFile)
     if (stat.isDirectory()) {
@@ -439,7 +489,8 @@ export function combineSourcemaps(
     return { ...nullSourceMap }
   }
 
-  let map
+  // We don't declare type here so we can convert/fake/map as RawSourceMap
+  let map //: SourceMap
   let mapIndex = 1
   const useArrayInterface =
     sourcemapList.slice(0, -1).find((m) => m.sources.length !== 1) === undefined
@@ -505,3 +556,10 @@ export function resolveHostname(
 
   return { host, name }
 }
+
+export function arraify<T>(target: T | T[]): T[] {
+  return Array.isArray(target) ? target : [target]
+}
+
+export const multilineCommentsRE = /\/\*(.|[\r\n])*?\*\//gm
+export const singlelineCommentsRE = /\/\/.*/g

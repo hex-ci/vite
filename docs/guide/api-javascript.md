@@ -4,13 +4,13 @@ Vite's JavaScript APIs are fully typed, and it's recommended to use TypeScript o
 
 ## `createServer`
 
-**Type Signature**
+**Type Signature:**
 
 ```ts
 async function createServer(inlineConfig?: InlineConfig): Promise<ViteDevServer>
 ```
 
-**Example Usage**
+**Example Usage:**
 
 ```js
 const { createServer } = require('vite')
@@ -40,7 +40,7 @@ The `InlineConfig` interface extends `UserConfig` with additional properties:
 ```ts
 interface ViteDevServer {
   /**
-   * The resolved vite config object.
+   * The resolved Vite config object.
    */
   config: ResolvedConfig
   /**
@@ -84,7 +84,7 @@ interface ViteDevServer {
     options?: TransformOptions
   ): Promise<TransformResult | null>
   /**
-   * Apply vite built-in HTML transforms and any plugin HTML transforms.
+   * Apply Vite built-in HTML transforms and any plugin HTML transforms.
    */
   transformIndexHtml(url: string, html: string): Promise<string>
   /**
@@ -121,7 +121,7 @@ interface ViteDevServer {
 
 ## `build`
 
-**Type Signature**
+**Type Signature:**
 
 ```ts
 async function build(
@@ -129,7 +129,7 @@ async function build(
 ): Promise<RollupOutput | RollupOutput[]>
 ```
 
-**Example Usage**
+**Example Usage:**
 
 ```js
 const path = require('path')
@@ -150,7 +150,7 @@ const { build } = require('vite')
 
 ## `resolveConfig`
 
-**Type Signature**
+**Type Signature:**
 
 ```ts
 async function resolveConfig(

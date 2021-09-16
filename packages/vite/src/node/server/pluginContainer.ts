@@ -38,7 +38,6 @@ import {
   OutputOptions,
   ModuleInfo,
   NormalizedInputOptions,
-  ChangeEvent,
   PartialResolvedId,
   ResolvedId,
   PluginContext as RollupPluginContext,
@@ -46,11 +45,11 @@ import {
   SourceDescription,
   EmittedFile,
   SourceMap,
-  RollupError
+  RollupError,
+  TransformResult
 } from 'rollup'
 import * as acorn from 'acorn'
 import acornClassFields from 'acorn-class-fields'
-import acornNumericSeparator from 'acorn-numeric-separator'
 import acornStaticClassFeatures from 'acorn-static-class-features'
 import { RawSourceMap } from '@ampproject/remapping/dist/types/types'
 import { combineSourcemaps } from '../utils'
@@ -60,6 +59,7 @@ import {
   createDebugger,
   ensureWatchedFile,
   generateCodeFrame,
+  isObject,
   isExternalUrl,
   normalizePath,
   numberToPos,
@@ -81,7 +81,6 @@ export interface PluginContainerOptions {
 export interface PluginContainer {
   options: InputOptions
   buildStart(options: InputOptions): Promise<void>
-  watchChange(id: string, event?: ChangeEvent): void
   resolveId(
     id: string,
     importer?: string,
@@ -114,8 +113,7 @@ type PluginContext = Omit<
 
 export let parser = acorn.Parser.extend(
   acornClassFields,
-  acornStaticClassFeatures,
-  acornNumericSeparator
+  acornStaticClassFeatures
 )
 
 export async function createPluginContainer(
@@ -169,6 +167,7 @@ export async function createPluginContainer(
     _activeId: string | null = null
     _activeCode: string | null = null
     _resolveSkips?: Set<Plugin>
+    _addedImports: Set<string> | null = null
 
     constructor(initialPlugin?: Plugin) {
       this._activePlugin = initialPlugin || null
@@ -216,6 +215,7 @@ export async function createPluginContainer(
 
     addWatchFile(id: string) {
       watchFiles.add(id)
+      ;(this._addedImports || (this._addedImports = new Set())).add(id)
       if (watcher) ensureWatchedFile(watcher, id, root)
     }
 
@@ -281,9 +281,22 @@ export async function createPluginContainer(
           : // some rollup plugins, e.g. json, sets position instead of pos
             (err as any).position
       if (pos != null) {
+        let errLocation
+        try {
+          errLocation = numberToPos(ctx._activeCode, pos)
+        } catch (err2) {
+          logger.error(
+            chalk.red(
+              `Error in error handler:\n${err2.stack || err2.message}\n`
+            ),
+            // print extra newline to separate the two errors
+            { error: err2 }
+          )
+          throw err
+        }
         err.loc = err.loc || {
           file: err.id,
-          ...numberToPos(ctx._activeCode, pos)
+          ...errLocation
         }
         err.frame = err.frame || generateCodeFrame(ctx._activeCode, pos)
       } else if (err.loc) {
@@ -381,11 +394,9 @@ export async function createPluginContainer(
       }
       if (options.acornInjectPlugins) {
         parser = acorn.Parser.extend(
-          ...[
-            acornClassFields,
-            acornStaticClassFeatures,
-            acornNumericSeparator
-          ].concat(options.acornInjectPlugins)
+          ...[acornClassFields, acornStaticClassFeatures].concat(
+            options.acornInjectPlugins
+          )
         )
       }
       return {
@@ -492,7 +503,7 @@ export async function createPluginContainer(
         ctx._activeId = id
         ctx._activeCode = code
         const start = isDebug ? Date.now() : 0
-        let result
+        let result: TransformResult | string | undefined
         try {
           result = await plugin.transform.call(ctx as any, code, id, ssr)
         } catch (e) {
@@ -505,7 +516,7 @@ export async function createPluginContainer(
             plugin.name,
             prettifyUrl(id, root)
           )
-        if (typeof result === 'object') {
+        if (isObject(result)) {
           code = result.code || ''
           if (result.map) ctx.sourcemapChain.push(result.map)
         } else {
@@ -515,17 +526,6 @@ export async function createPluginContainer(
       return {
         code,
         map: ctx._getCombinedSourcemap()
-      }
-    },
-
-    watchChange(id, event = 'update') {
-      const ctx = new Context()
-      if (watchFiles.has(id)) {
-        for (const plugin of plugins) {
-          if (!plugin.watchChange) continue
-          ctx._activePlugin = plugin
-          plugin.watchChange.call(ctx as any, id, { event })
-        }
       }
     },
 

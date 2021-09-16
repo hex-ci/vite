@@ -1,9 +1,18 @@
 import fs from 'fs'
 import path from 'path'
 import { tryNodeResolve, InternalResolveOptions } from '../plugins/resolve'
-import { isDefined, lookupFile, resolveFrom, unique } from '../utils'
+import {
+  createDebugger,
+  isDefined,
+  lookupFile,
+  resolveFrom,
+  unique
+} from '../utils'
 import { ResolvedConfig } from '..'
 import { createFilter } from '@rollup/pluginutils'
+
+const debug = createDebugger('vite:ssr-external')
+
 /**
  * Heuristics for determining whether a dependency should be externalized for
  * server-side rendering.
@@ -17,20 +26,22 @@ export function resolveSSRExternal(
   ssrExternals: Set<string> = new Set(),
   seen: Set<string> = new Set()
 ): string[] {
+  if (config.ssr?.noExternal === true) {
+    return []
+  }
+
   const { root } = config
   const pkgContent = lookupFile(root, ['package.json'])
   if (!pkgContent) {
     return []
   }
   const pkg = JSON.parse(pkgContent)
-  const devDeps = Object.keys(pkg.devDependencies || {})
   const importedDeps = knownImports.map(getNpmPackageName).filter(isDefined)
-  const deps = unique([...importedDeps, ...Object.keys(pkg.dependencies || {})])
-
-  for (const id of devDeps) {
-    ssrExternals.add(id)
-    seen.add(id)
-  }
+  const deps = unique([
+    ...importedDeps,
+    ...Object.keys(pkg.devDependencies || {}),
+    ...Object.keys(pkg.dependencies || {})
+  ])
 
   const resolveOptions: InternalResolveOptions = {
     root,
@@ -46,8 +57,8 @@ export function resolveSSRExternal(
     }
     seen.add(id)
 
-    let entry
-    let requireEntry
+    let entry: string | undefined
+    let requireEntry: string
     try {
       entry = tryNodeResolve(
         id,
@@ -60,6 +71,7 @@ export function resolveSSRExternal(
       requireEntry = require.resolve(id, { paths: [root] })
     } catch (e) {
       // resolve failed, assume include
+      debug(`Failed to resolve entries for package "${id}"\n`, e)
       continue
     }
     if (!entry) {
@@ -91,7 +103,9 @@ export function resolveSSRExternal(
   }
 
   for (const id of depsToTrace) {
-    const depRoot = path.dirname(resolveFrom(`${id}/package.json`, root))
+    const depRoot = path.dirname(
+      resolveFrom(`${id}/package.json`, root, !!config.resolve.preserveSymlinks)
+    )
     resolveSSRExternal(
       {
         ...config,

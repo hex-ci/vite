@@ -3,7 +3,8 @@ import slash from 'slash'
 import {
   compileTemplate,
   SFCDescriptor,
-  SFCTemplateCompileOptions
+  SFCTemplateCompileOptions,
+  SFCTemplateCompileResults
 } from '@vue/compiler-sfc'
 import { PluginContext, TransformPluginContext } from 'rollup'
 import { ResolvedOptions } from '.'
@@ -48,7 +49,7 @@ export function transformTemplateInMain(
   options: ResolvedOptions,
   pluginContext: PluginContext,
   ssr: boolean
-) {
+): SFCTemplateCompileResults {
   const result = compile(code, descriptor, options, pluginContext, ssr)
   return {
     ...result,
@@ -109,7 +110,8 @@ export function resolveTemplateCompilerOptions(
   const { id, filename, cssVars } = descriptor
 
   let transformAssetUrls = options.template?.transformAssetUrls
-  let assetUrlOptions
+  // @vue/compiler-sfc/dist/compiler-sfc.d.ts should export `AssetURLOptions`
+  let assetUrlOptions //: AssetURLOptions | undefined
   if (options.devServer) {
     // during dev, inject vite base so that @vue/compiler-sfc can transform
     // relative paths directly to absolute paths without incurring an extra import

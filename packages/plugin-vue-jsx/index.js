@@ -91,11 +91,7 @@ function vueJsxPlugin(options = {}) {
       const filter = createFilter(include || /\.[jt]sx$/, exclude)
 
       if (filter(id)) {
-        const plugins = [
-          importMeta,
-          [jsx, babelPluginOptions],
-          ...babelPlugins
-        ]
+        const plugins = [importMeta, [jsx, babelPluginOptions], ...babelPlugins]
         if (id.endsWith('.tsx')) {
           plugins.push([
             require('@babel/plugin-transform-typescript'),
@@ -211,7 +207,7 @@ function vueJsxPlugin(options = {}) {
               ) + `\nexport default __default__`
           }
 
-          if (needHmr && !ssr) {
+          if (needHmr && !ssr && !/\?vue&type=script/.test(id)) {
             let code = result.code
             let callbackCode = ``
             for (const { local, exported, id } of hotComponents) {

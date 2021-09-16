@@ -4,8 +4,13 @@ import { Plugin } from '../plugin'
 import MagicString from 'magic-string'
 import { ImportSpecifier, init, parse as parseImports } from 'es-module-lexer'
 import { OutputChunk } from 'rollup'
-import { chunkToEmittedCssFileMap } from './css'
+import {
+  chunkToEmittedCssFileMap,
+  isCSSRequest,
+  removedPureCssFilesCache
+} from './css'
 import { transformImportGlob } from '../importGlob'
+import { bareImportRE } from '../utils'
 
 /**
  * A flag for injected helpers. This flag will be set to `false` if the output
@@ -15,34 +20,36 @@ import { transformImportGlob } from '../importGlob'
 export const isModernFlag = `__VITE_IS_MODERN__`
 export const preloadMethod = `__vitePreload`
 export const preloadMarker = `__VITE_PRELOAD__`
+export const preloadBaseMarker = `__VITE_PRELOAD_BASE__`
 
 const preloadHelperId = 'vite/preload-helper'
-const preloadCode = `let scriptRel;const seen = {};export const ${preloadMethod} = ${preload.toString()}`
 const preloadMarkerRE = new RegExp(`"${preloadMarker}"`, 'g')
 
 /**
  * Helper for preloading CSS and direct imports of async chunks in parallel to
  * the async chunk itself.
  */
+
+function detectScriptRel() {
+  // @ts-ignore
+  const relList = document.createElement('link').relList
+  // @ts-ignore
+  return relList && relList.supports && relList.supports('modulepreload')
+    ? 'modulepreload'
+    : 'preload'
+}
+
+declare const scriptRel: string
 function preload(baseModule: () => Promise<{}>, deps?: string[]) {
   // @ts-ignore
-  if (!__VITE_IS_MODERN__ || !deps) {
+  if (!__VITE_IS_MODERN__ || !deps || deps.length === 0) {
     return baseModule()
-  }
-
-  // @ts-ignore
-  if (scriptRel === undefined) {
-    // @ts-ignore
-    const relList = document.createElement('link').relList
-    // @ts-ignore
-    scriptRel =
-      relList && relList.supports && relList.supports('modulepreload')
-        ? 'modulepreload'
-        : 'preload'
   }
 
   return Promise.all(
     deps.map((dep) => {
+      // @ts-ignore
+      dep = `${base}${dep}`
       // @ts-ignore
       if (dep in seen) return
       // @ts-ignore
@@ -79,6 +86,12 @@ function preload(baseModule: () => Promise<{}>, deps?: string[]) {
  */
 export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
   const ssr = !!config.build.ssr
+  const insertPreload = !(ssr || !!config.build.lib)
+
+  const scriptRel = config.build.polyfillModulePreload
+    ? `'modulepreload'`
+    : `(${detectScriptRel.toString()})()`
+  const preloadCode = `const scriptRel = ${scriptRel};const seen = {};const base = '${preloadBaseMarker}';export const ${preloadMethod} = ${preload.toString()}`
 
   return {
     name: 'vite:import-analysis',
@@ -91,7 +104,7 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
 
     load(id) {
       if (id === preloadHelperId) {
-        return preloadCode
+        return preloadCode.replace(preloadBaseMarker, config.base)
       }
     },
 
@@ -108,7 +121,7 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
       let imports: readonly ImportSpecifier[] = []
       try {
         imports = parseImports(source)[0]
-      } catch (e) {
+      } catch (e: any) {
         this.error(e, e.idx)
       }
 
@@ -125,15 +138,15 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
           s: start,
           e: end,
           ss: expStart,
+          n: specifier,
           d: dynamicIndex
         } = imports[index]
 
-        const isGlob =
+        // import.meta.glob
+        if (
           source.slice(start, end) === 'import.meta' &&
           source.slice(end, end + 5) === '.glob'
-
-        // import.meta.glob
-        if (isGlob) {
+        ) {
           const { importsString, exp, endIndex, isEager } =
             await transformImportGlob(
               source,
@@ -142,7 +155,7 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
               index,
               config.root,
               undefined,
-              ssr
+              insertPreload
             )
           str().prepend(importsString)
           str().overwrite(expStart, endIndex, exp)
@@ -152,18 +165,33 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
           continue
         }
 
-        if (dynamicIndex > -1 && !ssr) {
+        if (dynamicIndex > -1 && insertPreload) {
           needPreloadHelper = true
           const dynamicEnd = source.indexOf(`)`, end) + 1
           const original = source.slice(dynamicIndex, dynamicEnd)
           const replacement = `${preloadMethod}(() => ${original},${isModernFlag}?"${preloadMarker}":void 0)`
           str().overwrite(dynamicIndex, dynamicEnd, replacement)
         }
+
+        // Differentiate CSS imports that use the default export from those that
+        // do not by injecting a ?used query - this allows us to avoid including
+        // the CSS string when unnecessary (esbuild has trouble treeshaking
+        // them)
+        if (
+          specifier &&
+          isCSSRequest(specifier) &&
+          source.slice(expStart, start).includes('from') &&
+          // edge case for package names ending with .css (e.g normalize.css)
+          !(bareImportRE.test(specifier) && !specifier.includes('/'))
+        ) {
+          const url = specifier.replace(/\?|$/, (m) => `?used${m ? '&' : ''}`)
+          str().overwrite(start, end, dynamicIndex > -1 ? `'${url}'` : url)
+        }
       }
 
       if (
         needPreloadHelper &&
-        !ssr &&
+        insertPreload &&
         !source.includes(`const ${preloadMethod} =`)
       ) {
         str().prepend(`import { ${preloadMethod} } from "${preloadHelperId}";`)
@@ -184,7 +212,7 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
         const isModern = String(format === 'es')
         if (config.build.sourcemap) {
           const s = new MagicString(code)
-          let match
+          let match: RegExpExecArray | null
           while ((match = re.exec(code))) {
             s.overwrite(
               match.index,
@@ -208,7 +236,6 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
         return
       }
 
-      const isPolyfillEnabled = config.build.polyfillDynamicImport
       for (const file in bundle) {
         const chunk = bundle[file]
         // can't use chunk.dynamicImports.length here since some modules e.g.
@@ -218,7 +245,7 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
           let imports: ImportSpecifier[]
           try {
             imports = parseImports(code)[0].filter((i) => i.d > -1)
-          } catch (e) {
+          } catch (e: any) {
             this.error(e, e.idx)
           }
 
@@ -226,14 +253,10 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
             const s = new MagicString(code)
             for (let index = 0; index < imports.length; index++) {
               const { s: start, e: end, d: dynamicIndex } = imports[index]
-              // if dynamic import polyfill is used, rewrite the import to
-              // use the polyfilled function.
-              if (isPolyfillEnabled) {
-                s.overwrite(dynamicIndex, dynamicIndex + 6, `__import__`)
-              }
               // check the chunk being imported
               const url = code.slice(start, end)
               const deps: Set<string> = new Set()
+              let hasRemovedPureCssChunk = false
 
               if (url[0] === `"` && url[url.length - 1] === `"`) {
                 const ownerFilename = chunk.fileName
@@ -245,14 +268,29 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
                   analyzed.add(filename)
                   const chunk = bundle[filename] as OutputChunk | undefined
                   if (chunk) {
-                    deps.add(config.base + chunk.fileName)
+                    deps.add(chunk.fileName)
                     const cssFiles = chunkToEmittedCssFileMap.get(chunk)
                     if (cssFiles) {
                       cssFiles.forEach((file) => {
-                        deps.add(config.base + file)
+                        deps.add(file)
                       })
                     }
                     chunk.imports.forEach(addDeps)
+                  } else {
+                    const removedPureCssFiles =
+                      removedPureCssFilesCache.get(config)!
+                    const chunk = removedPureCssFiles.get(filename)
+                    if (chunk) {
+                      const cssFiles = chunkToEmittedCssFileMap.get(chunk)
+                      if (cssFiles && cssFiles.size > 0) {
+                        cssFiles.forEach((file) => {
+                          deps.add(file)
+                        })
+                        hasRemovedPureCssChunk = true
+                      }
+
+                      s.overwrite(dynamicIndex, end + 1, 'Promise.resolve({})')
+                    }
                   }
                 }
                 const normalizedFile = path.posix.join(
@@ -262,16 +300,23 @@ export function buildImportAnalysisPlugin(config: ResolvedConfig): Plugin {
                 addDeps(normalizedFile)
               }
 
-              const markPos = code.indexOf(preloadMarker, end)
+              let markPos = code.indexOf(preloadMarker, end)
+              // fix issue #3051
+              if (markPos === -1 && imports.length === 1) {
+                markPos = code.indexOf(preloadMarker)
+              }
+
               if (markPos > 0) {
                 s.overwrite(
                   markPos - 1,
                   markPos + preloadMarker.length + 1,
                   // the dep list includes the main chunk, so only need to
                   // preload when there are actual other deps.
-                  deps.size > 1
+                  deps.size > 1 ||
+                    // main chunk is removed
+                    (hasRemovedPureCssChunk && deps.size > 0)
                     ? `[${[...deps].map((d) => JSON.stringify(d)).join(',')}]`
-                    : `void 0`
+                    : `[]`
                 )
               }
             }

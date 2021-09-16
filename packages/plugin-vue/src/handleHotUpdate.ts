@@ -19,7 +19,7 @@ export async function handleHotUpdate({
   read,
   server
 }: HmrContext): Promise<ModuleNode[] | void> {
-  const prevDescriptor = getDescriptor(file, false)
+  const prevDescriptor = getDescriptor(file, server.config.root, false, false)
   if (!prevDescriptor) {
     // file hasn't been requested yet (e.g. async component)
     return
@@ -46,7 +46,14 @@ export async function handleHotUpdate({
     !isEqualBlock(descriptor.script, prevDescriptor.script) ||
     !isEqualBlock(descriptor.scriptSetup, prevDescriptor.scriptSetup)
   ) {
-    affectedModules.add(mainModule)
+    let scriptModule: ModuleNode | undefined
+    if (descriptor.script?.lang && !descriptor.script.src) {
+      const scriptModuleRE = new RegExp(
+        `type=script.*&lang\.${descriptor.script.lang}$`
+      )
+      scriptModule = modules.find((m) => scriptModuleRE.test(m.url))
+    }
+    affectedModules.add(scriptModule || mainModule)
   }
 
   if (!isEqualBlock(descriptor.template, prevDescriptor.template)) {
@@ -88,9 +95,16 @@ export async function handleHotUpdate({
     const next = nextStyles[i]
     if (!prev || !isEqualBlock(prev, next)) {
       didUpdateStyle = true
-      const mod = modules.find((m) => m.url.includes(`type=style&index=${i}`))
+      const mod = modules.find(
+        (m) =>
+          m.url.includes(`type=style&index=${i}`) &&
+          m.url.endsWith(`.${next.lang || 'css'}`)
+      )
       if (mod) {
         affectedModules.add(mod)
+        if (mod.url.includes('&inline')) {
+          affectedModules.add(mainModule)
+        }
       } else {
         // new style block - force reload
         affectedModules.add(mainModule)

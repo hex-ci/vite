@@ -11,7 +11,8 @@ import {
   prettifyUrl,
   removeTimestampQuery,
   timeFrom,
-  ensureWatchedFile
+  ensureWatchedFile,
+  isObject
 } from '../utils'
 import { checkPublicFile } from '../plugins/asset'
 import { ssrTransform } from '../ssr/ssrTransform'
@@ -28,6 +29,7 @@ export interface TransformResult {
   map: SourceMap | null
   etag?: string
   deps?: string[]
+  dynamicDeps?: string[]
 }
 
 export interface TransformOptions {
@@ -101,7 +103,7 @@ export async function transformRequest(
     }
   } else {
     isDebug && debugLoad(`${timeFrom(loadStart)} [plugin] ${prettyUrl}`)
-    if (typeof loadResult === 'object') {
+    if (isObject(loadResult)) {
       code = loadResult.code
       map = loadResult.map
     } else {
@@ -130,7 +132,7 @@ export async function transformRequest(
   const transformResult = await pluginContainer.transform(code, id, map, ssr)
   if (
     transformResult == null ||
-    (typeof transformResult === 'object' && transformResult.code == null)
+    (isObject(transformResult) && transformResult.code == null)
   ) {
     // no transform applied, keep code as-is
     isDebug &&
@@ -146,7 +148,7 @@ export async function transformRequest(
   if (map && mod.file) {
     map = (typeof map === 'string' ? JSON.parse(map) : map) as SourceMap
     if (map.mappings && !map.sourcesContent) {
-      await injectSourcesContent(map, mod.file)
+      await injectSourcesContent(map, mod.file, logger)
     }
   }
 

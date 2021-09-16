@@ -1,20 +1,20 @@
 import { ResolvedConfig } from '../config'
 import { Plugin } from '../plugin'
 import { resolvePlugins } from '../plugins'
-import { parse as parseUrl } from 'url'
-import qs, { ParsedUrlQuery } from 'querystring'
+import { parse as parseUrl, URLSearchParams } from 'url'
 import { fileToUrl, getAssetHash } from './asset'
 import { cleanUrl, injectQuery } from '../utils'
 import Rollup from 'rollup'
 import { ENV_PUBLIC_PATH } from '../constants'
 import path from 'path'
+import { onRollupWarning } from '../build'
 
-function parseWorkerRequest(id: string): ParsedUrlQuery | null {
+function parseWorkerRequest(id: string): Record<string, string> | null {
   const { search } = parseUrl(id)
   if (!search) {
     return null
   }
-  return qs.parse(search.slice(1))
+  return Object.fromEntries(new URLSearchParams(search.slice(1)))
 }
 
 const WorkerFileId = 'worker_file'
@@ -57,7 +57,10 @@ export function webWorkerPlugin(config: ResolvedConfig): Plugin {
         const rollup = require('rollup') as typeof Rollup
         const bundle = await rollup.rollup({
           input: cleanUrl(id),
-          plugins: await resolvePlugins({ ...config }, [], [], [])
+          plugins: await resolvePlugins({ ...config }, [], [], []),
+          onwarn(warning, warn) {
+            onRollupWarning(warning, warn, config)
+          }
         })
         let code: string
         try {
@@ -72,15 +75,14 @@ export function webWorkerPlugin(config: ResolvedConfig): Plugin {
         const content = Buffer.from(code)
         if (query.inline != null) {
           // inline as blob data url
-          return `const blob = new Blob([atob(\"${content.toString(
-            'base64'
-          )}\")], { type: 'text/javascript;charset=utf-8' });
+          return `const encodedJs = "${content.toString('base64')}";
+            const blob = typeof window !== "undefined" && window.Blob && new Blob([atob(encodedJs)], { type: "text/javascript;charset=utf-8" });
             export default function WorkerWrapper() {
-              const objURL = (window.URL || window.webkitURL).createObjectURL(blob);
+              const objURL = blob && (window.URL || window.webkitURL).createObjectURL(blob);
               try {
-                return new Worker(objURL);
+                return objURL ? new Worker(objURL) : new Worker("data:application/javascript;base64," + encodedJs, {type: "module"});
               } finally {
-                (window.URL || window.webkitURL).revokeObjectURL(objURL);
+                objURL && (window.URL || window.webkitURL).revokeObjectURL(objURL);
               }
             }`
         } else {

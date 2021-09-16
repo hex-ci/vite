@@ -2,7 +2,7 @@ import path from 'path'
 import { Plugin } from '../plugin'
 import { ResolvedConfig } from '../config'
 import { CLIENT_ENTRY, ENV_ENTRY } from '../constants'
-import { normalizePath } from '../utils'
+import { normalizePath, isObject } from '../utils'
 
 // ids in transform are normalized to unix style
 const normalizedClientEntry = normalizePath(CLIENT_ENTRY)
@@ -23,14 +23,14 @@ export function clientInjectionsPlugin(config: ResolvedConfig): Plugin {
         const protocol = options.protocol || null
         const timeout = options.timeout || 30000
         const overlay = options.overlay !== false
-        let port
+        let port: number | string | undefined
+        if (isObject(config.server.hmr)) {
+          port = config.server.hmr.clientPort || config.server.hmr.port
+        }
         if (config.server.middlewareMode) {
-          if (typeof config.server.hmr === 'object') {
-            port = config.server.hmr.clientPort || config.server.hmr.port
-          }
           port = String(port || 24678)
         } else {
-          port = String(options.port || config.server.port!)
+          port = String(port || options.port || config.server.port!)
         }
         let hmrBase = config.base
         if (options.path) {
@@ -43,7 +43,6 @@ export function clientInjectionsPlugin(config: ResolvedConfig): Plugin {
         return code
           .replace(`__MODE__`, JSON.stringify(config.mode))
           .replace(`__BASE__`, JSON.stringify(config.base))
-          .replace(`__ROOT__`, JSON.stringify(config.root))
           .replace(`__DEFINES__`, serializeDefine(config.define || {}))
           .replace(`__HMR_PROTOCOL__`, JSON.stringify(protocol))
           .replace(`__HMR_HOSTNAME__`, JSON.stringify(host))
